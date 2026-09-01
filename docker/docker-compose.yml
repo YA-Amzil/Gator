@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gator_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gator}
+      POSTGRES_DB: ${POSTGRES_DB:-gator}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - gator_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gator} -d ${POSTGRES_DB:-gator}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  gator_postgres_data:
