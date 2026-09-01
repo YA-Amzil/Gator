@@ -178,7 +178,3 @@ run; the Go and SQL are kept in sync by hand.
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-## Contributors
-
-Special thanks to Claude for assisting with structured commits and development guidance.
