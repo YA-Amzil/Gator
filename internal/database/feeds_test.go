@@ -28,6 +28,12 @@ func TestCreateAndGetFeedByURL(t *testing.T) {
 	if created.LastFetchedAt.Valid {
 		t.Error("LastFetchedAt should be NULL for a newly created feed")
 	}
+	if created.ConsecutiveFailures != 0 {
+		t.Errorf("ConsecutiveFailures = %d, want 0 for a newly created feed", created.ConsecutiveFailures)
+	}
+	if created.LastFetchError.Valid {
+		t.Error("LastFetchError should be NULL for a newly created feed")
+	}
 
 	found, err := q.GetFeedByURL(ctx, "https://news.ycombinator.com/rss")
 	if err != nil {
@@ -136,5 +142,118 @@ func TestGetNextFeedToFetch_NullsFirstThenOldest(t *testing.T) {
 	}
 	if after.ID == next.ID {
 		t.Errorf("GetNextFeedToFetch returned the just-fetched feed again; want the still-unfetched one")
+	}
+}
+
+func TestMarkFeedFetchSuccess_ResetsFailures(t *testing.T) {
+	q := setupTestDB(t)
+	ctx := context.Background()
+	user := createTestUser(t, q, "alice")
+	feed := createTestFeed(t, q, user.ID, "HN", "https://news.ycombinator.com/rss")
+
+	if _, err := q.MarkFeedFetchFailure(ctx, MarkFeedFetchFailureParams{ID: feed.ID, LastFetchError: "boom"}); err != nil {
+		t.Fatalf("MarkFeedFetchFailure returned error: %v", err)
+	}
+
+	succeeded, err := q.MarkFeedFetchSuccess(ctx, feed.ID)
+	if err != nil {
+		t.Fatalf("MarkFeedFetchSuccess returned error: %v", err)
+	}
+	if succeeded.ConsecutiveFailures != 0 {
+		t.Errorf("ConsecutiveFailures = %d, want 0 after MarkFeedFetchSuccess", succeeded.ConsecutiveFailures)
+	}
+	if succeeded.LastFetchError.Valid {
+		t.Error("LastFetchError should be cleared after MarkFeedFetchSuccess")
+	}
+}
+
+func TestMarkFeedFetchFailure_IncrementsAndStoresError(t *testing.T) {
+	q := setupTestDB(t)
+	ctx := context.Background()
+	user := createTestUser(t, q, "alice")
+	feed := createTestFeed(t, q, user.ID, "HN", "https://news.ycombinator.com/rss")
+
+	first, err := q.MarkFeedFetchFailure(ctx, MarkFeedFetchFailureParams{ID: feed.ID, LastFetchError: "timeout"})
+	if err != nil {
+		t.Fatalf("first MarkFeedFetchFailure returned error: %v", err)
+	}
+	if first.ConsecutiveFailures != 1 {
+		t.Errorf("ConsecutiveFailures = %d, want 1 after first failure", first.ConsecutiveFailures)
+	}
+	if !first.LastFetchError.Valid || first.LastFetchError.String != "timeout" {
+		t.Errorf("LastFetchError = %+v, want valid %q", first.LastFetchError, "timeout")
+	}
+
+	second, err := q.MarkFeedFetchFailure(ctx, MarkFeedFetchFailureParams{ID: feed.ID, LastFetchError: "connection refused"})
+	if err != nil {
+		t.Fatalf("second MarkFeedFetchFailure returned error: %v", err)
+	}
+	if second.ConsecutiveFailures != 2 {
+		t.Errorf("ConsecutiveFailures = %d, want 2 after second failure", second.ConsecutiveFailures)
+	}
+	if second.LastFetchError.String != "connection refused" {
+		t.Errorf("LastFetchError = %q, want %q", second.LastFetchError.String, "connection refused")
+	}
+}
+
+func TestGetNextFeedToFetch_SkipsBackedOffFeed(t *testing.T) {
+	q := setupTestDB(t)
+	ctx := context.Background()
+	user := createTestUser(t, q, "alice")
+
+	unhealthy := createTestFeed(t, q, user.ID, "Unhealthy", "https://unhealthy.example.com/rss")
+	healthy := createTestFeed(t, q, user.ID, "Healthy", "https://healthy.example.com/rss")
+
+	// Claim both feeds (sets last_fetched_at to now for each), then record
+	// a failure for one and a success for the other.
+	if _, err := q.MarkFeedFetched(ctx, unhealthy.ID); err != nil {
+		t.Fatalf("MarkFeedFetched(unhealthy) returned error: %v", err)
+	}
+	if _, err := q.MarkFeedFetchFailure(ctx, MarkFeedFetchFailureParams{ID: unhealthy.ID, LastFetchError: "boom"}); err != nil {
+		t.Fatalf("MarkFeedFetchFailure returned error: %v", err)
+	}
+	if _, err := q.MarkFeedFetched(ctx, healthy.ID); err != nil {
+		t.Fatalf("MarkFeedFetched(healthy) returned error: %v", err)
+	}
+	if _, err := q.MarkFeedFetchSuccess(ctx, healthy.ID); err != nil {
+		t.Fatalf("MarkFeedFetchSuccess returned error: %v", err)
+	}
+
+	// Both feeds now have a recent last_fetched_at, but the unhealthy one
+	// is within its backoff window (2 minutes after 1 failure) and must be
+	// skipped in favor of the healthy one, which is always eligible.
+	next, err := q.GetNextFeedToFetch(ctx)
+	if err != nil {
+		t.Fatalf("GetNextFeedToFetch returned error: %v", err)
+	}
+	if next.ID != healthy.ID {
+		t.Errorf("GetNextFeedToFetch returned %q, want the healthy feed %q", next.Name, healthy.Name)
+	}
+}
+
+func TestGetNextFeedToFetch_BackedOffFeedEligibleAfterWindow(t *testing.T) {
+	q := setupTestDB(t)
+	ctx := context.Background()
+	user := createTestUser(t, q, "alice")
+	feed := createTestFeed(t, q, user.ID, "Flaky", "https://flaky.example.com/rss")
+
+	if _, err := q.MarkFeedFetched(ctx, feed.ID); err != nil {
+		t.Fatalf("MarkFeedFetched returned error: %v", err)
+	}
+	if _, err := q.MarkFeedFetchFailure(ctx, MarkFeedFetchFailureParams{ID: feed.ID, LastFetchError: "boom"}); err != nil {
+		t.Fatalf("MarkFeedFetchFailure returned error: %v", err)
+	}
+
+	// Simulate the backoff window (2 minutes for 1 failure) having elapsed.
+	if _, err := q.db.ExecContext(ctx, `UPDATE feeds SET last_fetched_at = NOW() - INTERVAL '5 minutes' WHERE id = $1`, feed.ID); err != nil {
+		t.Fatalf("simulating elapsed backoff window: %v", err)
+	}
+
+	next, err := q.GetNextFeedToFetch(ctx)
+	if err != nil {
+		t.Fatalf("GetNextFeedToFetch returned error: %v", err)
+	}
+	if next.ID != feed.ID {
+		t.Errorf("GetNextFeedToFetch did not return the feed once its backoff window elapsed")
 	}
 }
