@@ -15,13 +15,15 @@ type User struct {
 }
 
 type Feed struct {
-	ID            uuid.UUID
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	Name          string
-	Url           string
-	UserID        uuid.UUID
-	LastFetchedAt sql.NullTime
+	ID                  uuid.UUID
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	Name                string
+	Url                 string
+	UserID              uuid.UUID
+	LastFetchedAt       sql.NullTime
+	ConsecutiveFailures int32
+	LastFetchError      sql.NullString
 }
 
 type FeedWithUser struct {
