@@ -19,6 +19,24 @@ WHERE id = $1
 RETURNING *;
 
 -- name: GetNextFeedToFetch :one
+-- Healthy feeds (no consecutive failures) are always eligible. A feed with
+-- consecutive failures backs off exponentially (2, 4, 8, ... minutes, capped
+-- at 60) since its last fetch attempt before it's tried again.
 SELECT * FROM feeds
+WHERE consecutive_failures = 0
+   OR last_fetched_at IS NULL
+   OR last_fetched_at <= NOW() - (INTERVAL '1 minute' * LEAST(POWER(2, consecutive_failures), 60))
 ORDER BY last_fetched_at NULLS FIRST
 LIMIT 1;
+
+-- name: MarkFeedFetchSuccess :one
+UPDATE feeds
+SET consecutive_failures = 0, last_fetch_error = NULL, updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: MarkFeedFetchFailure :one
+UPDATE feeds
+SET consecutive_failures = consecutive_failures + 1, last_fetch_error = $2, updated_at = NOW()
+WHERE id = $1
+RETURNING *;
