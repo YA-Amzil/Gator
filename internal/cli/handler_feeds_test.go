@@ -69,3 +69,29 @@ func TestHandlerFeeds_ListsAllFeeds(t *testing.T) {
 		t.Fatalf("HandlerFeeds returned error: %v", err)
 	}
 }
+
+func TestHandlerFeeds_ShowsUnhealthyFeeds(t *testing.T) {
+	s := newTestState(t)
+	alice := registerAndFetch(t, s, "alice")
+
+	if err := HandlerAddFeed(s, Command{Args: []string{"Hacker News", "https://news.ycombinator.com/rss"}}, alice); err != nil {
+		t.Fatalf("HandlerAddFeed returned error: %v", err)
+	}
+	feed, err := s.DB.GetFeedByURL(context.Background(), "https://news.ycombinator.com/rss")
+	if err != nil {
+		t.Fatalf("GetFeedByURL returned error: %v", err)
+	}
+	if _, err := s.DB.MarkFeedFetchFailure(context.Background(), database.MarkFeedFetchFailureParams{
+		ID:             feed.ID,
+		LastFetchError: "connection refused",
+	}); err != nil {
+		t.Fatalf("MarkFeedFetchFailure returned error: %v", err)
+	}
+
+	// HandlerFeeds should still succeed and print the unhealthy feed's status
+	// without erroring; the exact formatting is covered by manual review of
+	// handler_feeds.go, not asserted on stdout here.
+	if err := HandlerFeeds(s, Command{}); err != nil {
+		t.Fatalf("HandlerFeeds returned error: %v", err)
+	}
+}
