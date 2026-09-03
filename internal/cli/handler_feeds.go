@@ -61,6 +61,13 @@ func HandlerFeeds(s *State, cmd Command) error {
 
 	for _, f := range feeds {
 		fmt.Printf("* %s (%s) - added by %s\n", f.Name, f.Url, f.UserName)
+		if f.ConsecutiveFailures > 0 {
+			fmt.Printf("  unhealthy: %d consecutive failures", f.ConsecutiveFailures)
+			if f.LastFetchError.Valid {
+				fmt.Printf(" (last error: %s)", f.LastFetchError.String)
+			}
+			fmt.Println()
+		}
 	}
 	return nil
 }

@@ -62,8 +62,19 @@ func scrapeFeeds(s *State) {
 
 	rssFeed, err := rss.FetchFeed(ctx, feed.Url)
 	if err != nil {
-		log.Printf("couldn't fetch feed %q: %v", feed.Name, err)
+		failed, markErr := s.DB.MarkFeedFetchFailure(ctx, database.MarkFeedFetchFailureParams{
+			ID:             feed.ID,
+			LastFetchError: err.Error(),
+		})
+		if markErr != nil {
+			log.Printf("couldn't record fetch failure for feed %q: %v", feed.Name, markErr)
+		}
+		log.Printf("couldn't fetch feed %q (%d consecutive failures): %v", feed.Name, failed.ConsecutiveFailures, err)
 		return
+	}
+
+	if _, err := s.DB.MarkFeedFetchSuccess(ctx, feed.ID); err != nil {
+		log.Printf("couldn't record fetch success for feed %q: %v", feed.Name, err)
 	}
 
 	fmt.Printf("Fetched %d posts from %s\n", len(rssFeed.Channel.Item), feed.Name)
