@@ -175,6 +175,31 @@ each `*.sql.go` file mirrors a query file under `sql/queries/` exactly, using
 `database/sql` and `github.com/lib/pq`. There's no code-generation step to
 run; the Go and SQL are kept in sync by hand.
 
+## Testing
+
+```bash
+go test ./...
+```
+
+`internal/rss`, `internal/config`, and `internal/state` are pure unit tests
+with no external dependencies. `internal/database` and `internal/cli` run
+integration tests against a real Postgres database, read from `GATOR_DB_URL`
+(the same variable used at runtime) — they truncate all tables before each
+test for a clean slate, and isolate the session file (`internal/state`) in a
+temp directory so they never touch your real login session.
+
+If `GATOR_DB_URL` isn't set, or the database isn't reachable, those tests are
+skipped rather than failed, so `go test ./...` passes in any environment. To
+run the full suite locally:
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+export GATOR_DB_URL="postgres://gator:gator@localhost:5432/gator?sslmode=disable"
+go test ./...
+```
+
+(On Windows PowerShell, use `$env:GATOR_DB_URL = "..."` instead of `export`.)
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

@@ -11,7 +11,7 @@ go build -o bin/gator .          # or: make build
 # Run
 ./bin/gator <command> [args]     # or: make run (builds then runs with no args)
 
-# Vet / static check (no test suite exists yet)
+# Vet / static check
 go vet ./...
 
 # Postgres (local dev)
@@ -21,11 +21,24 @@ docker compose -f docker/docker-compose.yml down       # or: make docker-down
 # Migrations (requires: go install github.com/pressly/goose/v3/cmd/goose@latest)
 cd sql/schema && goose postgres "$GATOR_DB_URL" up      # or: make migrate-up
 cd sql/schema && goose postgres "$GATOR_DB_URL" down     # or: make migrate-down
+
+# Tests (unit tests always run; DB-backed tests need Postgres up + GATOR_DB_URL set,
+# and are skipped — not failed — otherwise)
+go test ./...
+go test ./internal/database/... -run TestGetNextFeedToFetch -v   # single test example
 ```
 
-There is no test suite in this repo yet — `go vet ./...` is the only current
-check. `.env` (copied from `.env.example`) sets `GATOR_DB_URL` and is loaded
-automatically at startup via godotenv.
+`.env` (copied from `.env.example`) sets `GATOR_DB_URL` and is loaded
+automatically at startup via godotenv, but `go test` does **not** load
+`.env` — export `GATOR_DB_URL` in the shell (or `$env:GATOR_DB_URL` in
+PowerShell) before running DB-backed tests.
+
+## Testing conventions
+
+`internal/rss`, `internal/config`, `internal/state` are pure unit tests. `internal/database` and `internal/cli` are integration tests against real Postgres:
+- Each package has a `newTestState`/`setupTestDB` helper (in a `testdb_test.go` file) that opens `GATOR_DB_URL`, `t.Skip`s if unset or unreachable, and `TRUNCATE`s `posts, feed_follows, feeds, users CASCADE` before the test body runs — tests assume an empty schema, not that migrations create it.
+- `internal/cli` tests additionally redirect the OS home directory (`t.Setenv("USERPROFILE", ...)` / `HOME` on non-Windows) to a temp dir per test, since `internal/state` reads/writes `~/.gator/session.json` directly with no injectable path — never run these against a real `$HOME`.
+- Because `internal/cli`'s DB helper can't reach `internal/database`'s unexported `setupTestDB` across the package boundary, it duplicates the same truncate/skip logic — keep both in sync if the schema changes.
 
 ## Architecture
 
