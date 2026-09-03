@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gator
+          POSTGRES_PASSWORD: gator
+          POSTGRES_DB: gator
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gator -d gator"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      GATOR_DB_URL: postgres://gator:gator@localhost:5432/gator?sslmode=disable
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.0"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Install goose
+        run: go install github.com/pressly/goose/v3/cmd/goose@latest
+
+      - name: Run migrations
+        working-directory: sql/schema
+        run: goose postgres "$GATOR_DB_URL" up
+
+      - name: Test
+        run: go test ./... -v
