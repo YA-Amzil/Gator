@@ -76,6 +76,18 @@ it fetched (`MarkFeedFetched`) → fetches/parses its RSS via
 `ON CONFLICT (url) DO NOTHING RETURNING *`, so a duplicate URL returns
 `sql.ErrNoRows`, which `savePost` treats as an expected no-op, not an error.
 
+**Feed health tracking** (`feeds.consecutive_failures`, `feeds.last_fetch_error`):
+a fetch attempt calls `MarkFeedFetched` first to claim the feed (sets
+`last_fetched_at`, independent of outcome — this is also what will let
+concurrent fetchers avoid double-claiming a feed later), then either
+`MarkFeedFetchSuccess` (resets the failure streak) or `MarkFeedFetchFailure`
+(increments it and stores the error) once the fetch attempt resolves.
+`GetNextFeedToFetch` always considers healthy feeds (`consecutive_failures = 0`)
+immediately eligible, but a feed with failures backs off exponentially — 2,
+4, 8... minutes, capped at 60 — since its `last_fetched_at`, computed
+entirely in SQL (`LEAST(POWER(2, consecutive_failures), 60)` minutes). The
+`feeds` CLI command surfaces unhealthy feeds (failure count + last error).
+
 **RSS fetching** (`internal/rss/rss.go`): `FetchFeed` sets
 `User-Agent: gator`, and HTML-unescapes exactly four fields after parsing —
 channel title/description and each item's title/description. Preserve that

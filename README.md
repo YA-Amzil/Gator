@@ -116,6 +116,15 @@ Example:
 gator agg 1m
 ```
 
+### Feed health tracking
+
+Each feed tracks `consecutive_failures` and `last_fetch_error`. A feed that
+fetches successfully is always immediately eligible again once it's the
+least-recently-fetched feed. A feed that keeps failing backs off
+exponentially (2, 4, 8... minutes, capped at 60) before it's retried, so one
+broken feed doesn't crowd out healthy ones or get hammered every tick. Run
+`gator feeds` to see which feeds are currently unhealthy and why.
+
 ## Installation
 
 ```bash
