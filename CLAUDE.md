@@ -85,6 +85,22 @@ it mirrors a spec other tooling depends on.
 cascade both directions) — `feeds` 1—N `posts` (cascade delete, unique
 `posts.url`).
 
+## Branching and workflow
+
+- Before starting any new feature, create a dedicated branch off `main` named after the feature (e.g. `feed-health-tracking`) — never commit feature work directly to `main`.
+- When the feature is complete, run the full test suite (`go test ./...`, with Postgres running and `GATOR_DB_URL` set) and confirm it's green before merging.
+- Merge by rebasing the feature branch onto `main`, then fast-forwarding `main` to it — never create a merge commit:
+  ```bash
+  git checkout feed-health-tracking
+  git rebase main
+  go test ./...                     # re-verify after rebase
+  git checkout main
+  git merge --ff-only feed-health-tracking
+  git branch -d feed-health-tracking
+  ```
+  `main` must stay linear; if `git merge --ff-only` refuses (main moved since the branch was cut), rebase again rather than falling back to a merge commit.
+- CI (`.github/workflows/ci.yml`) runs build, vet, and the full test suite against a real Postgres service container on every push and pull request — a feature isn't done until CI is green, in addition to local tests passing.
+
 ## Commit conventions
 
 Conventional Commits only, lowercase types: `chore`, `feat`, `fix`,

@@ -200,6 +200,13 @@ go test ./...
 
 (On Windows PowerShell, use `$env:GATOR_DB_URL = "..."` instead of `export`.)
 
+## Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push and pull request: it spins up a
+Postgres service container, builds, vets, applies migrations with goose, and
+runs the full test suite. See [Branching and workflow](CLAUDE.md#branching-and-workflow)
+in `CLAUDE.md` for how feature branches, tests, and CI fit together.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
