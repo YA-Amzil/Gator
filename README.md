@@ -195,10 +195,15 @@ run the full suite locally:
 ```bash
 docker compose -f docker/docker-compose.yml up -d
 export GATOR_DB_URL="postgres://gator:gator@localhost:5432/gator?sslmode=disable"
-go test ./...
+go test -p 1 ./...
 ```
 
 (On Windows PowerShell, use `$env:GATOR_DB_URL = "..."` instead of `export`.)
+
+`-p 1` matters: `internal/database` and `internal/cli` both truncate the same
+shared tables against one live Postgres instance, and `go test ./...` runs
+different packages' tests in parallel by default — without `-p 1` the two
+packages race and intermittently wipe each other's fixtures mid-test.
 
 ## Continuous Integration
 

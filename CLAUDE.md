@@ -23,9 +23,10 @@ cd sql/schema && goose postgres "$GATOR_DB_URL" up      # or: make migrate-up
 cd sql/schema && goose postgres "$GATOR_DB_URL" down     # or: make migrate-down
 
 # Tests (unit tests always run; DB-backed tests need Postgres up + GATOR_DB_URL set,
-# and are skipped — not failed — otherwise)
-go test ./...
-go test ./internal/database/... -run TestGetNextFeedToFetch -v   # single test example
+# and are skipped — not failed — otherwise). -p 1 is required for the full suite:
+# see the note below on why.
+go test -p 1 ./...
+go test ./internal/database/... -run TestGetNextFeedToFetch -v   # single test example (single package is always safe without -p 1)
 ```
 
 `.env` (copied from `.env.example`) sets `GATOR_DB_URL` and is loaded
@@ -39,6 +40,7 @@ PowerShell) before running DB-backed tests.
 - Each package has a `newTestState`/`setupTestDB` helper (in a `testdb_test.go` file) that opens `GATOR_DB_URL`, `t.Skip`s if unset or unreachable, and `TRUNCATE`s `posts, feed_follows, feeds, users CASCADE` before the test body runs — tests assume an empty schema, not that migrations create it.
 - `internal/cli` tests additionally redirect the OS home directory (`t.Setenv("USERPROFILE", ...)` / `HOME` on non-Windows) to a temp dir per test, since `internal/state` reads/writes `~/.gator/session.json` directly with no injectable path — never run these against a real `$HOME`.
 - Because `internal/cli`'s DB helper can't reach `internal/database`'s unexported `setupTestDB` across the package boundary, it duplicates the same truncate/skip logic — keep both in sync if the schema changes.
+- `internal/database` and `internal/cli` both truncate the same live tables against one shared Postgres instance, and `go test` runs different packages' binaries in parallel by default — always run the full suite with `go test -p 1 ./...` (as CI does), or the two packages race and truncate each other's fixtures mid-test. A single package (`go test ./internal/database/...`) is safe without `-p 1` since its own tests still run sequentially within one binary.
 
 ## Architecture
 

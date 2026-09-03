@@ -51,4 +51,4 @@ jobs:
         run: goose postgres "$GATOR_DB_URL" up
 
       - name: Test
-        run: go test ./... -v
+        run: go test -p 1 ./... -v
