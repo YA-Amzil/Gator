@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,8 +28,8 @@ var pubDateLayouts = []string{
 }
 
 func HandlerAgg(s *State, cmd Command) error {
-	if len(cmd.Args) != 1 {
-		return fmt.Errorf("usage: agg <time_between_reqs>")
+	if len(cmd.Args) != 2 {
+		return fmt.Errorf("usage: agg <time_between_reqs> <concurrency>")
 	}
 
 	timeBetweenRequests, err := time.ParseDuration(cmd.Args[0])
@@ -34,35 +37,57 @@ func HandlerAgg(s *State, cmd Command) error {
 		return fmt.Errorf("invalid duration %q: %w", cmd.Args[0], err)
 	}
 
-	fmt.Printf("Collecting feeds every %s\n", timeBetweenRequests)
+	concurrency, err := strconv.Atoi(cmd.Args[1])
+	if err != nil || concurrency < 1 {
+		return fmt.Errorf("invalid concurrency %q: must be a positive integer", cmd.Args[1])
+	}
+
+	fmt.Printf("Collecting feeds every %s (%d at a time)\n", timeBetweenRequests, concurrency)
 
 	ticker := time.NewTicker(timeBetweenRequests)
 	defer ticker.Stop()
 
 	for ; ; <-ticker.C {
-		scrapeFeeds(s)
+		scrapeFeeds(s, concurrency)
 	}
 }
 
-// scrapeFeeds fetches the least-recently-fetched feed, marks it fetched,
-// downloads its RSS content, and saves any new posts.
-func scrapeFeeds(s *State) {
+// scrapeFeeds fetches up to concurrency of the least-recently-fetched
+// eligible feeds and processes them in parallel, one goroutine per feed, so
+// a slow or failing feed doesn't hold up the others.
+func scrapeFeeds(s *State, concurrency int) {
 	ctx := context.Background()
 
-	feed, err := s.DB.GetNextFeedToFetch(ctx)
+	feeds, err := s.DB.GetNextFeedsToFetch(ctx, int32(concurrency))
 	if err != nil {
-		log.Printf("couldn't get next feed to fetch: %v", err)
+		log.Printf("couldn't get next feeds to fetch: %v", err)
 		return
 	}
 
-	if _, err := s.DB.MarkFeedFetched(ctx, feed.ID); err != nil {
+	var wg sync.WaitGroup
+	for _, feed := range feeds {
+		wg.Add(1)
+		go func(feed database.Feed) {
+			defer wg.Done()
+			scrapeFeed(ctx, s.DB, feed)
+		}(feed)
+	}
+	wg.Wait()
+}
+
+// scrapeFeed marks a single feed fetched, downloads its RSS content, records
+// the outcome (success clears its failure streak, failure backs it off),
+// and saves any new posts. Output is buffered and printed in one call so
+// concurrent feeds' lines don't interleave.
+func scrapeFeed(ctx context.Context, db *database.Queries, feed database.Feed) {
+	if _, err := db.MarkFeedFetched(ctx, feed.ID); err != nil {
 		log.Printf("couldn't mark feed %q fetched: %v", feed.Name, err)
 		return
 	}
 
 	rssFeed, err := rss.FetchFeed(ctx, feed.Url)
 	if err != nil {
-		failed, markErr := s.DB.MarkFeedFetchFailure(ctx, database.MarkFeedFetchFailureParams{
+		failed, markErr := db.MarkFeedFetchFailure(ctx, database.MarkFeedFetchFailureParams{
 			ID:             feed.ID,
 			LastFetchError: err.Error(),
 		})
@@ -73,16 +98,17 @@ func scrapeFeeds(s *State) {
 		return
 	}
 
-	if _, err := s.DB.MarkFeedFetchSuccess(ctx, feed.ID); err != nil {
+	if _, err := db.MarkFeedFetchSuccess(ctx, feed.ID); err != nil {
 		log.Printf("couldn't record fetch success for feed %q: %v", feed.Name, err)
 	}
 
-	fmt.Printf("Fetched %d posts from %s\n", len(rssFeed.Channel.Item), feed.Name)
-
+	var out strings.Builder
+	fmt.Fprintf(&out, "Fetched %d posts from %s\n", len(rssFeed.Channel.Item), feed.Name)
 	for _, item := range rssFeed.Channel.Item {
-		fmt.Printf("* %s\n", item.Title)
-		savePost(ctx, s.DB, feed.ID, item)
+		fmt.Fprintf(&out, "* %s\n", item.Title)
+		savePost(ctx, db, feed.ID, item)
 	}
+	fmt.Print(out.String())
 }
 
 func savePost(ctx context.Context, db *database.Queries, feedID uuid.UUID, item rss.RSSItem) {
