@@ -77,23 +77,38 @@ func (q *Queries) MarkFeedFetched(ctx context.Context, id uuid.UUID) (Feed, erro
 	return f, err
 }
 
-// getNextFeedToFetch: healthy feeds (no consecutive failures) are always
+// getNextFeedsToFetch: healthy feeds (no consecutive failures) are always
 // eligible. A feed with consecutive failures backs off exponentially
 // (2, 4, 8, ... minutes, capped at 60) since its last fetch attempt before
-// it's tried again.
-const getNextFeedToFetch = `SELECT ` + feedColumns + `
+// it's tried again. Returns up to `limit` feeds so callers can fetch a batch
+// concurrently.
+const getNextFeedsToFetch = `SELECT ` + feedColumns + `
 FROM feeds
 WHERE consecutive_failures = 0
    OR last_fetched_at IS NULL
    OR last_fetched_at <= NOW() - (INTERVAL '1 minute' * LEAST(POWER(2, consecutive_failures), 60))
 ORDER BY last_fetched_at NULLS FIRST
-LIMIT 1`
+LIMIT $1`
 
-func (q *Queries) GetNextFeedToFetch(ctx context.Context) (Feed, error) {
-	row := q.db.QueryRowContext(ctx, getNextFeedToFetch)
-	var f Feed
-	err := row.Scan(&f.ID, &f.CreatedAt, &f.UpdatedAt, &f.Name, &f.Url, &f.UserID, &f.LastFetchedAt, &f.ConsecutiveFailures, &f.LastFetchError)
-	return f, err
+func (q *Queries) GetNextFeedsToFetch(ctx context.Context, limit int32) ([]Feed, error) {
+	rows, err := q.db.QueryContext(ctx, getNextFeedsToFetch, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var feeds []Feed
+	for rows.Next() {
+		var f Feed
+		if err := rows.Scan(&f.ID, &f.CreatedAt, &f.UpdatedAt, &f.Name, &f.Url, &f.UserID, &f.LastFetchedAt, &f.ConsecutiveFailures, &f.LastFetchError); err != nil {
+			return nil, err
+		}
+		feeds = append(feeds, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return feeds, nil
 }
 
 const markFeedFetchSuccess = `UPDATE feeds
