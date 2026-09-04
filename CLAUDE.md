@@ -26,7 +26,11 @@ cd sql/schema && goose postgres "$GATOR_DB_URL" down     # or: make migrate-down
 # and are skipped — not failed — otherwise). -p 1 is required for the full suite:
 # see the note below on why.
 go test -p 1 ./...
-go test ./internal/database/... -run TestGetNextFeedToFetch -v   # single test example (single package is always safe without -p 1)
+go test ./internal/database/... -run TestGetNextFeedsToFetch -v   # single test example (single package is always safe without -p 1)
+
+# Race detector (requires cgo + a C compiler, e.g. gcc; CI runs this, a Windows box without
+# a C toolchain cannot)
+go test -p 1 -race ./...
 ```
 
 `.env` (copied from `.env.example`) sets `GATOR_DB_URL` and is loaded
@@ -66,23 +70,29 @@ scanning is positional (`rows.Scan(&f.ID, &f.CreatedAt, ...)`).
 - `internal/config`: environment-variable config (`GATOR_DB_URL`), loaded once per process via `config.Load()`.
 - `internal/state`: the *currently logged-in user*, persisted between separate CLI invocations as JSON at `~/.gator/session.json`. `register`/`login` write it; `MiddlewareLoggedIn` and `users` read it. This is session data, not config — keep it out of `internal/config`.
 
-**Aggregation loop** (`internal/cli/handler_agg.go`): `agg <duration>` parses
-the duration with `time.ParseDuration` and runs `scrapeFeeds` immediately,
-then again on every `time.Ticker` tick, forever. Each `scrapeFeeds` call:
-picks the feed with the oldest `last_fetched_at` (`GetNextFeedToFetch`,
-`ORDER BY last_fetched_at NULLS FIRST` so unfetched feeds go first) → marks
-it fetched (`MarkFeedFetched`) → fetches/parses its RSS via
+**Aggregation loop** (`internal/cli/handler_agg.go`): `agg <duration> <concurrency>`
+parses the duration with `time.ParseDuration` and runs `scrapeFeeds`
+immediately, then again on every `time.Ticker` tick, forever. Each
+`scrapeFeeds` call fetches up to `concurrency` eligible feeds in one query
+(`GetNextFeedsToFetch`, `ORDER BY last_fetched_at NULLS FIRST` so unfetched
+feeds go first) and processes each in its own goroutine via `scrapeFeed`,
+joined with a `sync.WaitGroup` — a slow or failing feed can't block the
+others. `scrapeFeed` marks the feed fetched (`MarkFeedFetched`, claiming it
+up front before the HTTP call) → fetches/parses its RSS via
 `internal/rss.FetchFeed` → saves each item as a post. `CreatePost` uses
 `ON CONFLICT (url) DO NOTHING RETURNING *`, so a duplicate URL returns
 `sql.ErrNoRows`, which `savePost` treats as an expected no-op, not an error.
+Each goroutine buffers its own output (`strings.Builder`) and prints it in a
+single `fmt.Print` call so concurrent feeds' lines don't interleave.
 
 **Feed health tracking** (`feeds.consecutive_failures`, `feeds.last_fetch_error`):
 a fetch attempt calls `MarkFeedFetched` first to claim the feed (sets
-`last_fetched_at`, independent of outcome — this is also what will let
-concurrent fetchers avoid double-claiming a feed later), then either
+`last_fetched_at`, independent of outcome — this is also what lets
+concurrent goroutines avoid double-claiming a feed, since each claim and its
+fetch happen sequentially within one `scrapeFeed` call), then either
 `MarkFeedFetchSuccess` (resets the failure streak) or `MarkFeedFetchFailure`
 (increments it and stores the error) once the fetch attempt resolves.
-`GetNextFeedToFetch` always considers healthy feeds (`consecutive_failures = 0`)
+`GetNextFeedsToFetch` always considers healthy feeds (`consecutive_failures = 0`)
 immediately eligible, but a feed with failures backs off exponentially — 2,
 4, 8... minutes, capped at 60 — since its `last_fetched_at`, computed
 entirely in SQL (`LEAST(POWER(2, consecutive_failures), 60)` minutes). The

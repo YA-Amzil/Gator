@@ -104,17 +104,22 @@ Commands:
 
 The `agg` command runs a continuous loop:
 
-1. Fetch the next feed to update (the one with the oldest `last_fetched_at`, nulls first)
-2. Mark it as fetched
-3. Parse its RSS XML
-4. Print each post's title and save new posts to the database
-5. Wait for the next tick of a `time.Ticker` set to the given duration, then repeat
+1. Fetch up to `<concurrency>` eligible feeds to update (the least-recently-fetched ones, nulls first)
+2. Process each one concurrently, one goroutine per feed:
+   - Mark it as fetched
+   - Parse its RSS XML
+   - Print each post's title and save new posts to the database
+3. Wait for all feeds in the batch to finish, then wait for the next tick of a `time.Ticker` set to the given duration, and repeat
 
-Example:
+Example — fetch up to 5 feeds at a time, every minute:
 
 ```bash
-gator agg 1m
+gator agg 1m 5
 ```
+
+A slow or failing feed only holds up its own goroutine, not the rest of the
+batch, and each feed's output is printed as one block so concurrent feeds'
+lines don't interleave.
 
 ### Feed health tracking
 
@@ -140,7 +145,7 @@ gator addfeed "TechCrunch" https://techcrunch.com/feed/
 gator follow https://news.ycombinator.com/rss
 gator following
 gator feeds
-gator agg 30s
+gator agg 30s 5
 gator browse 10
 ```
 
@@ -158,7 +163,7 @@ gator browse 10
 | `following` | yes | List feeds the current user follows |
 | `unfollow <url>` | yes | Stop following a feed |
 | `browse [limit]` | yes | Show saved posts from followed feeds (default limit: 2) |
-| `agg <duration>` | – | Continuously scrape feeds (e.g. `agg 1m`, `agg 30s`) |
+| `agg <duration> <concurrency>` | – | Continuously scrape up to `concurrency` feeds at a time (e.g. `agg 1m 5`) |
 
 Commands marked "Auth required" need a logged-in user (`register`/`login`
 sets one); the login state is stored in `~/.gator/session.json`, separate
@@ -214,11 +219,16 @@ shared tables against one live Postgres instance, and `go test ./...` runs
 different packages' tests in parallel by default — without `-p 1` the two
 packages race and intermittently wipe each other's fixtures mid-test.
 
+Since `agg` now fetches feeds concurrently, CI also runs with the race
+detector (`go test -p 1 -race ./...`). That requires cgo and a C compiler, so
+it may not run on every machine (e.g. a Windows box without a C toolchain) —
+CI is the reliable place to catch data races.
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` runs on every push and pull request: it spins up a
 Postgres service container, builds, vets, applies migrations with goose, and
-runs the full test suite. See [Branching and workflow](CLAUDE.md#branching-and-workflow)
+runs the full test suite with the race detector. See [Branching and workflow](CLAUDE.md#branching-and-workflow)
 in `CLAUDE.md` for how feature branches, tests, and CI fit together.
 
 ## License
