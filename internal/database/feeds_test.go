@@ -105,7 +105,21 @@ func TestMarkFeedFetched(t *testing.T) {
 	}
 }
 
-func TestGetNextFeedToFetch_NullsFirstThenOldest(t *testing.T) {
+// getNextFeedToFetch is a test helper wrapping GetNextFeedsToFetch(ctx, 1)
+// for the many existing tests that only care about a single result.
+func getNextFeedToFetch(t *testing.T, q *Queries) Feed {
+	t.Helper()
+	feeds, err := q.GetNextFeedsToFetch(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("GetNextFeedsToFetch returned error: %v", err)
+	}
+	if len(feeds) != 1 {
+		t.Fatalf("GetNextFeedsToFetch(limit=1) returned %d feeds, want 1", len(feeds))
+	}
+	return feeds[0]
+}
+
+func TestGetNextFeedsToFetch_NullsFirstThenOldest(t *testing.T) {
 	q := setupTestDB(t)
 	ctx := context.Background()
 	user := createTestUser(t, q, "alice")
@@ -122,12 +136,9 @@ func TestGetNextFeedToFetch_NullsFirstThenOldest(t *testing.T) {
 
 	// Neither feed has been fetched yet: either may come back first since
 	// both have a NULL last_fetched_at, but the query must return one of them.
-	next, err := q.GetNextFeedToFetch(ctx)
-	if err != nil {
-		t.Fatalf("GetNextFeedToFetch returned error: %v", err)
-	}
+	next := getNextFeedToFetch(t, q)
 	if next.ID != feedA.ID && next.ID != feedB.ID {
-		t.Fatalf("GetNextFeedToFetch returned unexpected feed %v", next.ID)
+		t.Fatalf("GetNextFeedsToFetch returned unexpected feed %v", next.ID)
 	}
 
 	// Mark whichever feed came back as fetched; the other (still NULL)
@@ -136,12 +147,43 @@ func TestGetNextFeedToFetch_NullsFirstThenOldest(t *testing.T) {
 		t.Fatalf("MarkFeedFetched returned error: %v", err)
 	}
 
-	after, err := q.GetNextFeedToFetch(ctx)
-	if err != nil {
-		t.Fatalf("GetNextFeedToFetch returned error: %v", err)
-	}
+	after := getNextFeedToFetch(t, q)
 	if after.ID == next.ID {
-		t.Errorf("GetNextFeedToFetch returned the just-fetched feed again; want the still-unfetched one")
+		t.Errorf("GetNextFeedsToFetch returned the just-fetched feed again; want the still-unfetched one")
+	}
+}
+
+func TestGetNextFeedsToFetch_RespectsLimitAndOrder(t *testing.T) {
+	q := setupTestDB(t)
+	ctx := context.Background()
+	user := createTestUser(t, q, "alice")
+	now := time.Now().UTC()
+
+	var created []Feed
+	for _, name := range []string{"A", "B", "C"} {
+		f, err := q.CreateFeed(ctx, CreateFeedParams{
+			ID: uuid.New(), CreatedAt: now, UpdatedAt: now,
+			Name: name, Url: "https://" + name + ".example.com/rss", UserID: user.ID,
+		})
+		if err != nil {
+			t.Fatalf("CreateFeed(%q) returned error: %v", name, err)
+		}
+		created = append(created, f)
+		// Space out claims so ordering is deterministic (oldest first).
+		if _, err := q.MarkFeedFetched(ctx, f.ID); err != nil {
+			t.Fatalf("MarkFeedFetched(%q) returned error: %v", name, err)
+		}
+	}
+
+	feeds, err := q.GetNextFeedsToFetch(ctx, 2)
+	if err != nil {
+		t.Fatalf("GetNextFeedsToFetch returned error: %v", err)
+	}
+	if len(feeds) != 2 {
+		t.Fatalf("len(feeds) = %d, want 2 (limit should be respected)", len(feeds))
+	}
+	if feeds[0].ID != created[0].ID || feeds[1].ID != created[1].ID {
+		t.Errorf("GetNextFeedsToFetch did not return the two oldest-fetched feeds in order")
 	}
 }
 
@@ -196,7 +238,7 @@ func TestMarkFeedFetchFailure_IncrementsAndStoresError(t *testing.T) {
 	}
 }
 
-func TestGetNextFeedToFetch_SkipsBackedOffFeed(t *testing.T) {
+func TestGetNextFeedsToFetch_SkipsBackedOffFeed(t *testing.T) {
 	q := setupTestDB(t)
 	ctx := context.Background()
 	user := createTestUser(t, q, "alice")
@@ -222,16 +264,13 @@ func TestGetNextFeedToFetch_SkipsBackedOffFeed(t *testing.T) {
 	// Both feeds now have a recent last_fetched_at, but the unhealthy one
 	// is within its backoff window (2 minutes after 1 failure) and must be
 	// skipped in favor of the healthy one, which is always eligible.
-	next, err := q.GetNextFeedToFetch(ctx)
-	if err != nil {
-		t.Fatalf("GetNextFeedToFetch returned error: %v", err)
-	}
+	next := getNextFeedToFetch(t, q)
 	if next.ID != healthy.ID {
-		t.Errorf("GetNextFeedToFetch returned %q, want the healthy feed %q", next.Name, healthy.Name)
+		t.Errorf("GetNextFeedsToFetch returned %q, want the healthy feed %q", next.Name, healthy.Name)
 	}
 }
 
-func TestGetNextFeedToFetch_BackedOffFeedEligibleAfterWindow(t *testing.T) {
+func TestGetNextFeedsToFetch_BackedOffFeedEligibleAfterWindow(t *testing.T) {
 	q := setupTestDB(t)
 	ctx := context.Background()
 	user := createTestUser(t, q, "alice")
@@ -249,11 +288,8 @@ func TestGetNextFeedToFetch_BackedOffFeedEligibleAfterWindow(t *testing.T) {
 		t.Fatalf("simulating elapsed backoff window: %v", err)
 	}
 
-	next, err := q.GetNextFeedToFetch(ctx)
-	if err != nil {
-		t.Fatalf("GetNextFeedToFetch returned error: %v", err)
-	}
+	next := getNextFeedToFetch(t, q)
 	if next.ID != feed.ID {
-		t.Errorf("GetNextFeedToFetch did not return the feed once its backoff window elapsed")
+		t.Errorf("GetNextFeedsToFetch did not return the feed once its backoff window elapsed")
 	}
 }
