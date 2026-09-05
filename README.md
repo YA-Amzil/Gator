@@ -2,10 +2,9 @@
 
 ## Overview
 
-This project is a RSS-powered Blog Aggregator built in Go 1.27.
-It fetches RSS feeds, stores posts in a PostgreSQL database, and provides a
-CLI for registering users, managing feeds, following other users' feeds, and
-running a background aggregator loop.
+This project is a simple RSS‑powered blog aggregator. It automatically collects new posts from different websites and stores them in one place. You control everything through a small command‑line tool: you can add feeds, follow other users’ feeds, browse posts, and run a background process that keeps fetching new content.
+
+It’s useful because it saves time: instead of checking many websites manually, all new articles are gathered automatically. You can also use it when writing a paper, as it helps you keep track of your sources, follow updates from research blogs, and quickly check new information from trusted feeds.
 
 ## Requirements
 
