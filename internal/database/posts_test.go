@@ -107,5 +107,42 @@ func TestGetPostsForUser_OnlyFollowedFeedsAndRespectsLimit(t *testing.T) {
 		if p.FeedID == otherFeed.ID {
 			t.Errorf("GetPostsForUser returned a post from an unfollowed feed: %q", p.Title)
 		}
+		if p.IsRead {
+			t.Errorf("post %q: IsRead = true, want false (nothing has been marked read yet)", p.Title)
+		}
+	}
+}
+
+func TestGetPostByURL(t *testing.T) {
+	q := setupTestDB(t)
+	ctx := context.Background()
+	owner := createTestUser(t, q, "alice")
+	feed := createTestFeed(t, q, owner.ID, "Hacker News", "https://news.ycombinator.com/rss")
+	now := time.Now().UTC()
+
+	created, err := q.CreatePost(ctx, CreatePostParams{
+		ID: uuid.New(), CreatedAt: now, UpdatedAt: now,
+		Title: "Show HN: Gator", Url: "https://news.ycombinator.com/item?id=1",
+		FeedID: feed.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreatePost returned error: %v", err)
+	}
+
+	found, err := q.GetPostByURL(ctx, "https://news.ycombinator.com/item?id=1")
+	if err != nil {
+		t.Fatalf("GetPostByURL returned error: %v", err)
+	}
+	if found.ID != created.ID {
+		t.Errorf("GetPostByURL ID = %v, want %v", found.ID, created.ID)
+	}
+}
+
+func TestGetPostByURL_NotFound(t *testing.T) {
+	q := setupTestDB(t)
+
+	_, err := q.GetPostByURL(context.Background(), "https://does-not-exist.example.com/1")
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("err = %v, want sql.ErrNoRows", err)
 	}
 }
