@@ -27,6 +27,14 @@ var pubDateLayouts = []string{
 	"Mon, 2 Jan 2006 15:04:05 -0700",
 }
 
+// fetchTimeout bounds how long a single feed's HTTP fetch may take. Without
+// it, a server that hangs mid-response (rather than erroring outright) would
+// block its goroutine forever, and since scrapeFeeds waits on every
+// goroutine in the batch, one stuck feed could stall the next tick
+// indefinitely. It's a var, not a const, so tests can shrink it instead of
+// sleeping for the production value.
+var fetchTimeout = 30 * time.Second
+
 func HandlerAgg(s *State, cmd Command) error {
 	if len(cmd.Args) != 2 {
 		return fmt.Errorf("usage: agg <time_between_reqs> <concurrency>")
@@ -85,7 +93,10 @@ func scrapeFeed(ctx context.Context, db *database.Queries, feed database.Feed) {
 		return
 	}
 
-	rssFeed, err := rss.FetchFeed(ctx, feed.Url)
+	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+
+	rssFeed, err := rss.FetchFeed(fetchCtx, feed.Url)
 	if err != nil {
 		failed, markErr := db.MarkFeedFetchFailure(ctx, database.MarkFeedFetchFailureParams{
 			ID:             feed.ID,
