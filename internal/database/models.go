@@ -55,3 +55,16 @@ type Post struct {
 	PublishedAt sql.NullTime
 	FeedID      uuid.UUID
 }
+
+type PostWithReadStatus struct {
+	Post
+	IsRead bool
+}
+
+type PostRead struct {
+	ID        uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	UserID    uuid.UUID
+	PostID    uuid.UUID
+}
