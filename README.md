@@ -20,7 +20,7 @@ running a background aggregator loop.
 - **State** (`internal/state`) — persists the logged-in user between CLI runs
 - **Database** (`sql/`, `internal/database`) — migrations, queries, and PostgreSQL access
 - **RSS** (`internal/rss`) — XML parsing and feed fetching
-- **CLI** (`internal/cli`) — command registry, middleware, and handlers (`addfeed`, `follow`, `following`, `agg`, etc.)
+- **CLI** (`internal/cli`) — command registry, middleware, and handlers (`addfeed`, `follow`, `following`, `agg`, `read`/`unread`, etc.)
 - **Docker** (`docker/`) — PostgreSQL container and supporting compose config
 
 ```
@@ -130,6 +130,25 @@ exponentially (2, 4, 8... minutes, capped at 60) before it's retried, so one
 broken feed doesn't crowd out healthy ones or get hammered every tick. Run
 `gator feeds` to see which feeds are currently unhealthy and why.
 
+## Read/Unread Tracking
+
+Each user tracks their own read/unread status per post, independent of other
+users following the same feed. This is implemented using a `post_reads` join
+table with:
+
+- Primary key
+- `created_at`, `updated_at`
+- `user_id` (FK, cascade delete)
+- `post_id` (FK, cascade delete)
+- Unique `(user_id, post_id)` constraint — a row's presence means read; its
+  absence means unread, so no column on `posts` itself changes
+
+Commands:
+
+- `read <post-url>` — mark a post as read (a no-op if already read)
+- `unread <post-url>` — mark a post as unread
+- `browse` — now shows a `[read]`/`[unread]` marker per post and an unread count
+
 ## Installation
 
 ```bash
@@ -147,6 +166,7 @@ gator following
 gator feeds
 gator agg 30s 5
 gator browse 10
+gator read https://news.ycombinator.com/item?id=1
 ```
 
 ## Commands
@@ -162,7 +182,9 @@ gator browse 10
 | `follow <url>` | yes | Follow an existing feed by URL |
 | `following` | yes | List feeds the current user follows |
 | `unfollow <url>` | yes | Stop following a feed |
-| `browse [limit]` | yes | Show saved posts from followed feeds (default limit: 2) |
+| `browse [limit]` | yes | Show saved posts from followed feeds, with read/unread status (default limit: 2) |
+| `read <post-url>` | yes | Mark a post as read |
+| `unread <post-url>` | yes | Mark a post as unread |
 | `agg <duration> <concurrency>` | – | Continuously scrape up to `concurrency` feeds at a time (e.g. `agg 1m 5`) |
 
 Commands marked "Auth required" need a logged-in user (`register`/`login`

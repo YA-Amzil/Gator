@@ -104,10 +104,24 @@ channel title/description and each item's title/description. Preserve that
 exact behavior (fields, header, unescape targets) if touching this file, since
 it mirrors a spec other tooling depends on.
 
+**Read/unread tracking** (`post_reads` table): a post is "read" for a user
+if a `(user_id, post_id)` row exists in `post_reads` — absence means unread,
+so no column on `posts` itself needs updating and multiple users can track
+read state on the same shared post independently. `read <post-url>` /
+`unread <post-url>` reference posts by URL (`GetPostByURL`), the same
+convention `follow`/`unfollow` use for feeds. `MarkPostRead` uses
+`ON CONFLICT (user_id, post_id) DO NOTHING RETURNING *`, so re-marking an
+already-read post returns `sql.ErrNoRows`, treated as a no-op by
+`HandlerRead` (mirrors the `CreatePost` dedup pattern). `GetPostsForUser`
+LEFT JOINs `post_reads` to expose `PostWithReadStatus.IsRead`; `browse`
+prints an unread count via `CountUnreadPostsForUser` alongside each post's
+`[read]`/`[unread]` marker.
+
 **Schema relationships**: `users` 1—N `feeds` (creator, cascade delete) ←M—N→
 `feed_follows` joins `users` and `feeds` (unique `(user_id, feed_id)`,
 cascade both directions) — `feeds` 1—N `posts` (cascade delete, unique
-`posts.url`).
+`posts.url`) ←M—N→ `post_reads` joins `users` and `posts` (unique
+`(user_id, post_id)`, cascade both directions).
 
 ## Branching and workflow
 
