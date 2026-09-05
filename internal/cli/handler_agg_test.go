@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"gator/internal/database"
 )
@@ -184,5 +185,49 @@ func TestScrapeFeeds_FetchesBatchConcurrently(t *testing.T) {
 		if p.FeedID != feedA.ID && p.FeedID != feedB.ID {
 			t.Errorf("post %q attributed to unexpected feed %v (concurrency may have mixed up feed IDs)", p.Title, p.FeedID)
 		}
+	}
+}
+
+func TestScrapeFeeds_TimeoutMarksFailureAndDoesNotHang(t *testing.T) {
+	s := newTestState(t)
+	alice := registerAndFetch(t, s, "alice")
+
+	// Shrink fetchTimeout for the test instead of waiting out the 30s
+	// production value; restored so it can't leak into other tests.
+	original := fetchTimeout
+	fetchTimeout = 50 * time.Millisecond
+	defer func() { fetchTimeout = original }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond) // much longer than fetchTimeout
+		w.Write([]byte(testFeedXML))
+	}))
+	defer server.Close()
+
+	if err := HandlerAddFeed(s, Command{Args: []string{"Slow Feed", server.URL}}, alice); err != nil {
+		t.Fatalf("HandlerAddFeed returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		scrapeFeeds(s, 1)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("scrapeFeeds did not return within 2s; a hanging fetch is blocking the whole batch")
+	}
+
+	feed, err := s.DB.GetFeedByURL(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("GetFeedByURL returned error: %v", err)
+	}
+	if feed.ConsecutiveFailures != 1 {
+		t.Errorf("ConsecutiveFailures = %d, want 1 after a timed-out fetch", feed.ConsecutiveFailures)
+	}
+	if !feed.LastFetchError.Valid || feed.LastFetchError.String == "" {
+		t.Error("LastFetchError should be set after a timed-out fetch")
 	}
 }
