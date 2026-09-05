@@ -119,7 +119,10 @@ gator agg 1m 5
 
 A slow or failing feed only holds up its own goroutine, not the rest of the
 batch, and each feed's output is printed as one block so concurrent feeds'
-lines don't interleave.
+lines don't interleave. Each fetch is also bounded by a 30-second timeout, so
+a server that hangs mid-response (rather than erroring outright) can't stall
+that goroutine — and therefore the next tick — forever; it's simply recorded
+as a failed fetch like any other error.
 
 ### Feed health tracking
 

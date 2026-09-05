@@ -79,7 +79,10 @@ feeds go first) and processes each in its own goroutine via `scrapeFeed`,
 joined with a `sync.WaitGroup` — a slow or failing feed can't block the
 others. `scrapeFeed` marks the feed fetched (`MarkFeedFetched`, claiming it
 up front before the HTTP call) → fetches/parses its RSS via
-`internal/rss.FetchFeed` → saves each item as a post. `CreatePost` uses
+`internal/rss.FetchFeed`, wrapped in `context.WithTimeout(ctx, fetchTimeout)`
+(30s, a package `var` so tests can shrink it) so a server that hangs
+mid-response can't block its goroutine — and therefore the whole batch's
+`wg.Wait()` — forever → saves each item as a post. `CreatePost` uses
 `ON CONFLICT (url) DO NOTHING RETURNING *`, so a duplicate URL returns
 `sql.ErrNoRows`, which `savePost` treats as an expected no-op, not an error.
 Each goroutine buffers its own output (`strings.Builder`) and prints it in a
