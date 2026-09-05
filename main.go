@@ -51,6 +51,8 @@ func run() error {
 	cmds.Register("following", cli.MiddlewareLoggedIn(cli.HandlerFollowing))
 	cmds.Register("unfollow", cli.MiddlewareLoggedIn(cli.HandlerUnfollow))
 	cmds.Register("browse", cli.MiddlewareLoggedIn(cli.HandlerBrowse))
+	cmds.Register("read", cli.MiddlewareLoggedIn(cli.HandlerRead))
+	cmds.Register("unread", cli.MiddlewareLoggedIn(cli.HandlerUnread))
 	cmds.Register("agg", cli.HandlerAgg)
 
 	if len(os.Args) < 2 {
