@@ -7,6 +7,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"gator/internal/cache"
 	"gator/internal/cli"
 	"gator/internal/config"
 	"gator/internal/database"
@@ -35,9 +36,20 @@ func run() error {
 		return fmt.Errorf("connecting to database: %w", err)
 	}
 
+	var userCacheBackend cache.Cache = cache.NewNoop()
+	if cfg.RedisURL != "" {
+		redisCache, err := cache.NewRedisCache(cfg.RedisURL)
+		if err != nil {
+			return fmt.Errorf("configuring redis cache: %w", err)
+		}
+		defer redisCache.Close()
+		userCacheBackend = redisCache
+	}
+
 	s := &cli.State{
-		DB:  database.New(db),
-		Cfg: cfg,
+		DB:    database.New(db),
+		Cfg:   cfg,
+		Users: cache.NewUserCache(userCacheBackend),
 	}
 
 	cmds := cli.NewCommands()

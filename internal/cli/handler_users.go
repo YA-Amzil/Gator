@@ -36,6 +36,7 @@ func HandlerRegister(s *State, cmd Command) error {
 	if err != nil {
 		return fmt.Errorf("creating user: %w", err)
 	}
+	s.Users.Set(ctx, user)
 
 	if err := state.Write(state.Session{CurrentUserName: user.Name}); err != nil {
 		return fmt.Errorf("saving session: %w", err)
@@ -52,9 +53,14 @@ func HandlerLogin(s *State, cmd Command) error {
 	name := cmd.Args[0]
 
 	ctx := context.Background()
-	user, err := s.DB.GetUserByName(ctx, name)
-	if err != nil {
-		return fmt.Errorf("user %q does not exist", name)
+	user, ok := s.Users.Get(ctx, name)
+	if !ok {
+		var err error
+		user, err = s.DB.GetUserByName(ctx, name)
+		if err != nil {
+			return fmt.Errorf("user %q does not exist", name)
+		}
+		s.Users.Set(ctx, user)
 	}
 
 	if err := state.Write(state.Session{CurrentUserName: user.Name}); err != nil {
@@ -70,6 +76,7 @@ func HandlerReset(s *State, cmd Command) error {
 	if err := s.DB.DeleteAllUsers(ctx); err != nil {
 		return fmt.Errorf("resetting users: %w", err)
 	}
+	s.Users.InvalidateAll(ctx)
 	fmt.Println("Database reset: all users (and their feeds, follows, and posts) were deleted")
 	return nil
 }
