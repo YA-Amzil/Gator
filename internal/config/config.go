@@ -11,12 +11,19 @@ import (
 	"github.com/joho/godotenv"
 )
 
-const dbURLEnvVar = "GATOR_DB_URL"
+const (
+	dbURLEnvVar    = "GATOR_DB_URL"
+	redisURLEnvVar = "GATOR_REDIS_URL"
+)
 
 type Config struct {
 	// DBURL is the Postgres connection string, e.g.
 	// postgres://user:password@localhost:5432/gator?sslmode=disable
 	DBURL string
+	// RedisURL is an optional Redis connection string, e.g.
+	// redis://localhost:6379/0. Empty means caching is disabled — unlike
+	// DBURL, this is not required.
+	RedisURL string
 }
 
 // Load reads configuration from the environment. It returns an error if a
@@ -29,5 +36,8 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("%s environment variable is not set", dbURLEnvVar)
 	}
 
-	return &Config{DBURL: dbURL}, nil
+	return &Config{
+		DBURL:    dbURL,
+		RedisURL: os.Getenv(redisURLEnvVar),
+	}, nil
 }
