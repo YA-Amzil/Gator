@@ -9,7 +9,7 @@ It’s useful because it saves time: instead of checking many websites manually,
 ## Requirements
 
 - Go 1.27+
-- Docker (for Postgres)
+- Docker (for Postgres, and optionally Redis)
 - [goose](https://github.com/pressly/goose) for running migrations:
   `go install github.com/pressly/goose/v3/cmd/goose@latest`
 
@@ -18,22 +18,24 @@ It’s useful because it saves time: instead of checking many websites manually,
 - **Config** (`internal/config`) — environment-based configuration loader
 - **State** (`internal/state`) — persists the logged-in user between CLI runs
 - **Database** (`sql/`, `internal/database`) — migrations, queries, and PostgreSQL access
+- **Cache** (`internal/cache`) — optional Redis-backed cache-aside layer for user lookups
 - **RSS** (`internal/rss`) — XML parsing and feed fetching
 - **CLI** (`internal/cli`) — command registry, middleware, and handlers (`addfeed`, `follow`, `following`, `agg`, `read`/`unread`, etc.)
-- **Docker** (`docker/`) — PostgreSQL container and supporting compose config
+- **Docker** (`docker/`) — PostgreSQL + Redis containers and supporting compose config
 
 ```
 main.go                  entrypoint: loads config, wires commands, dispatches
 docker/
-  docker-compose.yml      Postgres service
+  docker-compose.yml      Postgres + Redis services
   .env.example             docker-compose variable defaults
 sql/
   schema/                  goose migrations (up/down)
   queries/                 source-of-truth SQL, mirrored by hand in internal/database
 internal/
-  config/                  env-var based configuration (DB URL)
+  config/                  env-var based configuration (DB URL, optional Redis URL)
   state/                   persists the logged-in user between CLI runs
   database/                hand-written sqlc-style query layer (database/sql + lib/pq)
+  cache/                   optional Redis-backed cache-aside layer for user lookups
   rss/                     RSS feed fetching + XML parsing
   cli/                     command registry, middleware, and handlers
 ```
@@ -44,8 +46,9 @@ internal/
 - Store feeds, posts, and follow relationships
 - Many-to-many user/feed following system
 - Background aggregator loop using `time.Ticker`
+- Optional Redis-backed caching for the hottest read path (logged-in user lookups)
 - Clean, versioned SQL migrations
-- Fully containerized PostgreSQL setup
+- Fully containerized PostgreSQL (+ optional Redis) setup
 - Idiomatic Go code with clear separation of concerns
 
 ## Docker Setup
@@ -53,18 +56,20 @@ internal/
 The project includes a `/docker` folder containing:
 
 - `docker-compose.yml`
-- PostgreSQL service
-- Volume persistence
-- Environment variables for DB configuration (`docker/.env.example`)
+- PostgreSQL service (required) and Redis service (optional, for caching)
+- Volume persistence for Postgres
+- Environment variables for both services (`docker/.env.example`)
 
-Start the database:
+Start everything:
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-Defaults to user/password/db `gator`/`gator`/`gator` on port `5432`
-(override via `docker/.env`, copied from `docker/.env.example`).
+Postgres defaults to user/password/db `gator`/`gator`/`gator` on port `5432`;
+Redis defaults to port `6379` (both overridable via `docker/.env`, copied
+from `docker/.env.example`). Redis is entirely optional — see
+[Caching](#caching) below.
 
 ## RSS Fetching
 
@@ -151,6 +156,39 @@ Commands:
 - `unread <post-url>` — mark a post as unread
 - `browse` — now shows a `[read]`/`[unread]` marker per post and an unread count
 
+## Caching
+
+Gator is a CLI, not a long-running server — most commands are a single
+process that starts, runs, and exits, so "caching" here means something
+narrower than in a typical web app: speeding up the one read that happens on
+*every* authenticated command, across many separate invocations sharing one
+Postgres. Redis is entirely optional; without it (or if it's unreachable)
+every command works identically, just without the speedup.
+
+**What's cached, and why just this**: resolving the logged-in user
+(`GetUserByName`, called by every authenticated command via
+`MiddlewareLoggedIn`) is the single hottest read in the system, and user
+data is read-heavy but write-rare — ideal for caching. Feed and post reads
+are deliberately *not* cached: feed health data (`consecutive_failures`,
+`last_fetched_at`) changes on every `agg` tick, and the feed-scheduling
+query must always see live data — caching it would risk breaking scheduling
+correctness, not just serving stale results.
+
+**How it fails safe**: every cache operation fails open. A Redis outage, a
+bad `GATOR_REDIS_URL`, or Redis simply not being configured all degrade a
+command to "no faster than before" — never to an error. Invalidation
+(needed after `reset` deletes all users) uses an atomic generation counter
+rather than scanning and deleting keys: bumping one counter makes every
+previously-issued cache key unreachable at once, and old entries just expire
+on their own via TTL.
+
+Enable it by setting `GATOR_REDIS_URL` (see `.env.example`):
+
+```bash
+docker compose -f docker/docker-compose.yml up -d   # starts Redis too
+export GATOR_REDIS_URL="redis://localhost:6379/0"
+```
+
 ## Installation
 
 ```bash
@@ -195,8 +233,8 @@ from the env-var-based DB config.
 
 ## Setup (step by step)
 
-1. **Start Postgres** — `docker compose -f docker/docker-compose.yml up -d`
-2. **Configure the app** — `cp .env.example .env` (sets `GATOR_DB_URL`, loaded automatically at startup)
+1. **Start Postgres (and optionally Redis)** — `docker compose -f docker/docker-compose.yml up -d`
+2. **Configure the app** — `cp .env.example .env` (sets `GATOR_DB_URL`, and optionally `GATOR_REDIS_URL` for caching — both loaded automatically at startup)
 3. **Run migrations**:
    ```bash
    cd sql/schema
@@ -224,15 +262,20 @@ with no external dependencies. `internal/database` and `internal/cli` run
 integration tests against a real Postgres database, read from `GATOR_DB_URL`
 (the same variable used at runtime) — they truncate all tables before each
 test for a clean slate, and isolate the session file (`internal/state`) in a
-temp directory so they never touch your real login session.
+temp directory so they never touch your real login session. `internal/cache`
+tests its `UserCache` logic (invalidation, fail-open behavior) against an
+in-process fake with no infra needed, plus a smaller set of tests against
+real Redis (`GATOR_REDIS_URL`) just to confirm the Redis backend itself
+implements the cache interface correctly.
 
-If `GATOR_DB_URL` isn't set, or the database isn't reachable, those tests are
-skipped rather than failed, so `go test ./...` passes in any environment. To
-run the full suite locally:
+If `GATOR_DB_URL`/`GATOR_REDIS_URL` aren't set, or the services aren't
+reachable, those tests are skipped rather than failed, so `go test ./...`
+passes in any environment. To run the full suite locally:
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d
 export GATOR_DB_URL="postgres://gator:gator@localhost:5432/gator?sslmode=disable"
+export GATOR_REDIS_URL="redis://localhost:6379/0"
 go test -p 1 ./...
 ```
 
@@ -250,10 +293,12 @@ CI is the reliable place to catch data races.
 
 ## Continuous Integration
 
-`.github/workflows/ci.yml` runs on every push and pull request: it spins up a
-Postgres service container, builds, vets, applies migrations with goose, and
-runs the full test suite with the race detector. See [Branching and workflow](CLAUDE.md#branching-and-workflow)
-in `CLAUDE.md` for how feature branches, tests, and CI fit together.
+`.github/workflows/ci.yml` runs on every push and pull request: it spins up
+Postgres and Redis service containers, builds, vets, applies migrations with
+goose, and runs the full test suite with the race detector — so the Redis
+cache path is exercised for real, not just against the in-process fake. See
+[Branching and workflow](CLAUDE.md#branching-and-workflow) in `CLAUDE.md`
+for how feature branches, tests, and CI fit together.
 
 ## License
 

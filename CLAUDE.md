@@ -14,7 +14,7 @@ go build -o bin/gator .          # or: make build
 # Vet / static check
 go vet ./...
 
-# Postgres (local dev)
+# Postgres + Redis (local dev — Redis is optional, see Caching below)
 docker compose -f docker/docker-compose.yml up -d     # or: make docker-up
 docker compose -f docker/docker-compose.yml down       # or: make docker-down
 
@@ -22,9 +22,9 @@ docker compose -f docker/docker-compose.yml down       # or: make docker-down
 cd sql/schema && goose postgres "$GATOR_DB_URL" up      # or: make migrate-up
 cd sql/schema && goose postgres "$GATOR_DB_URL" down     # or: make migrate-down
 
-# Tests (unit tests always run; DB-backed tests need Postgres up + GATOR_DB_URL set,
-# and are skipped — not failed — otherwise). -p 1 is required for the full suite:
-# see the note below on why.
+# Tests (unit tests always run; DB-backed and Redis-backed tests need their
+# respective services up + env var set, and are skipped — not failed —
+# otherwise). -p 1 is required for the full suite: see the note below on why.
 go test -p 1 ./...
 go test ./internal/database/... -run TestGetNextFeedsToFetch -v   # single test example (single package is always safe without -p 1)
 
@@ -33,10 +33,10 @@ go test ./internal/database/... -run TestGetNextFeedsToFetch -v   # single test 
 go test -p 1 -race ./...
 ```
 
-`.env` (copied from `.env.example`) sets `GATOR_DB_URL` and is loaded
-automatically at startup via godotenv, but `go test` does **not** load
-`.env` — export `GATOR_DB_URL` in the shell (or `$env:GATOR_DB_URL` in
-PowerShell) before running DB-backed tests.
+`.env` (copied from `.env.example`) sets `GATOR_DB_URL` (required) and
+`GATOR_REDIS_URL` (optional) and is loaded automatically at startup via
+godotenv, but `go test` does **not** load `.env` — export both in the shell
+(or `$env:...` in PowerShell) before running DB-backed/Redis-backed tests.
 
 ## Testing conventions
 
@@ -45,6 +45,7 @@ PowerShell) before running DB-backed tests.
 - `internal/cli` tests additionally redirect the OS home directory (`t.Setenv("USERPROFILE", ...)` / `HOME` on non-Windows) to a temp dir per test, since `internal/state` reads/writes `~/.gator/session.json` directly with no injectable path — never run these against a real `$HOME`.
 - Because `internal/cli`'s DB helper can't reach `internal/database`'s unexported `setupTestDB` across the package boundary, it duplicates the same truncate/skip logic — keep both in sync if the schema changes.
 - `internal/database` and `internal/cli` both truncate the same live tables against one shared Postgres instance, and `go test` runs different packages' binaries in parallel by default — always run the full suite with `go test -p 1 ./...` (as CI does), or the two packages race and truncate each other's fixtures mid-test. A single package (`go test ./internal/database/...`) is safe without `-p 1` since its own tests still run sequentially within one binary.
+- `internal/cache`'s Redis-backed tests follow the same `setupTestRedis` skip-if-unreachable pattern, gated on `GATOR_REDIS_URL`. Its `UserCache` logic itself (generation-based invalidation, fail-open on errors) is tested against `MemoryCache` instead — fast, deterministic, no infra needed — with the Redis tests only confirming `RedisCache` correctly implements `Cache` against a real server. `internal/cli`'s `newTestState` wires `Users` to a fresh `MemoryCache` per test (not the no-op backend), so CLI tests genuinely exercise cache-aside/invalidation, not just a disabled pass-through.
 
 ## Architecture
 
@@ -69,6 +70,12 @@ scanning is positional (`rows.Scan(&f.ID, &f.CreatedAt, ...)`).
 **Two-tier persistence** — don't conflate these:
 - `internal/config`: environment-variable config (`GATOR_DB_URL`), loaded once per process via `config.Load()`.
 - `internal/state`: the *currently logged-in user*, persisted between separate CLI invocations as JSON at `~/.gator/session.json`. `register`/`login` write it; `MiddlewareLoggedIn` and `users` read it. This is session data, not config — keep it out of `internal/config`.
+
+**Caching** (`internal/cache`): an optional Redis-backed cache-aside layer in front of `GetUserByName` — chosen because it's the single hottest read in the CLI (every authenticated command resolves the current user via `MiddlewareLoggedIn`), while write-rare, near-static user data makes it the safest thing to cache. `Cache` is a small interface (`Get`/`Set`/`Delete`/`Incr`) with three implementations: `RedisCache` (production, `NewRedisCache` from `GATOR_REDIS_URL`), `MemoryCache` (in-process, used by tests and available as a non-Redis fallback), and `NoopCache` (always misses — used when `GATOR_REDIS_URL` is unset, so `State.Users` is never nil and callers never branch on whether caching is enabled). `UserCache` wraps any `Cache` with the actual cache-aside logic and **fails open on every error** — a downed/misconfigured Redis degrades a command to "no faster than before," never breaks it. Do not add caching inside `internal/database` itself; that package stays a pure hand-written sqlc-equivalent (see above) — caching lives one layer up, in `internal/cli`.
+
+Invalidation uses a generation counter, not per-key deletion: every cache key embeds the current generation (`user:gen:<n>:name:<name>`), and `HandlerReset` bumps it with one atomic `Incr` on `user:gen` — old entries are simply never looked up again and expire via TTL (5 min) on their own, no `SCAN`+`DEL` needed. This matters concretely: without invalidation, a lingering session for a user `reset` just deleted would keep resolving from a stale cache entry instead of failing with a clear "no such user" error (`TestHandlerReset_InvalidatesUserCache` in `internal/cli` guards this). `HandlerRegister`/`HandlerLogin` write/read through the same cache on top of `MiddlewareLoggedIn`'s lookup.
+
+Feed and post reads (`GetFeeds`, `GetFeedByURL`, `GetPostsForUser`) are deliberately **not** cached: feed rows churn on every `agg` tick (health tracking, below) and `GetNextFeedsToFetch` must always reflect live backoff state — caching it would actively break scheduling correctness, not just serve stale data.
 
 **Aggregation loop** (`internal/cli/handler_agg.go`): `agg <duration> <concurrency>`
 parses the duration with `time.ParseDuration` and runs `scrapeFeeds`
