@@ -10,6 +10,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"gator/internal/cache"
 	"gator/internal/config"
 	"gator/internal/database"
 )
@@ -53,7 +54,8 @@ func newTestState(t *testing.T) *State {
 	}
 
 	return &State{
-		DB:  database.New(db),
-		Cfg: &config.Config{DBURL: dbURL},
+		DB:    database.New(db),
+		Cfg:   &config.Config{DBURL: dbURL},
+		Users: cache.NewUserCache(cache.NewMemory()),
 	}
 }
