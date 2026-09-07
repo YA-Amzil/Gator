@@ -296,9 +296,10 @@ CI is the reliable place to catch data races.
 ## Continuous Integration
 
 `.github/workflows/ci.yml` runs on every push and pull request: it spins up
-Postgres and Redis service containers, builds, vets, applies migrations with
-goose, and runs the full test suite with the race detector — so the Redis
-cache path is exercised for real, not just against the in-process fake. See
+Postgres and Redis service containers, builds, vets, scans dependencies for
+known vulnerabilities with `govulncheck`, applies migrations with goose, and
+runs the full test suite with the race detector — so the Redis cache path is
+exercised for real, not just against the in-process fake. See
 [Branching and workflow](CLAUDE.md#branching-and-workflow) in `CLAUDE.md`
 for how feature branches, tests, and CI fit together.
 

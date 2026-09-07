@@ -14,6 +14,10 @@ go build -o bin/gator .          # or: make build
 # Vet / static check
 go vet ./...
 
+# Vulnerability scan (requires: go install golang.org/x/vuln/cmd/govulncheck@latest;
+# CI runs this on every push)
+govulncheck ./...
+
 # Postgres + Redis (local dev — Redis is optional, see Caching below)
 docker compose -f docker/docker-compose.yml up -d     # or: make docker-up
 docker compose -f docker/docker-compose.yml down       # or: make docker-down
@@ -151,7 +155,7 @@ cascade both directions) — `feeds` 1—N `posts` (cascade delete, unique
   git branch -d feed-health-tracking
   ```
   `main` must stay linear; if `git merge --ff-only` refuses (main moved since the branch was cut), rebase again rather than falling back to a merge commit.
-- CI (`.github/workflows/ci.yml`) runs build, vet, and the full test suite against a real Postgres service container on every push and pull request — a feature isn't done until CI is green, in addition to local tests passing.
+- CI (`.github/workflows/ci.yml`) runs build, vet, a `govulncheck` dependency vulnerability scan, and the full test suite against real Postgres and Redis service containers on every push and pull request — a feature isn't done until CI is green, in addition to local tests passing.
 
 ## Commit conventions
 
