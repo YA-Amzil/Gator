@@ -109,3 +109,39 @@ func TestFetchFeed_InvalidURL(t *testing.T) {
 		t.Fatal("expected an error for an invalid URL, got nil")
 	}
 }
+
+func TestFetchFeed_BodyTooLargeFails(t *testing.T) {
+	// Shrink the limit for the test instead of transferring real megabytes;
+	// restored so it can't leak into other tests.
+	original := maxFeedBodySize
+	maxFeedBodySize = 100
+	defer func() { maxFeedBodySize = original }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, maxFeedBodySize+1))
+	}))
+	defer server.Close()
+
+	_, err := FetchFeed(context.Background(), server.URL)
+	if err == nil {
+		t.Fatal("expected an error for a response exceeding the size limit, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error = %q, want it to mention the size limit", err.Error())
+	}
+}
+
+func TestFetchFeed_BodyAtLimitSucceeds(t *testing.T) {
+	original := maxFeedBodySize
+	maxFeedBodySize = int64(len(sampleFeedXML))
+	defer func() { maxFeedBodySize = original }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(sampleFeedXML))
+	}))
+	defer server.Close()
+
+	if _, err := FetchFeed(context.Background(), server.URL); err != nil {
+		t.Errorf("FetchFeed returned error for a body exactly at the limit: %v", err)
+	}
+}
