@@ -25,6 +25,15 @@ type RSSItem struct {
 	PubDate     string `xml:"pubDate"`
 }
 
+// maxFeedBodySize caps how much of a feed response FetchFeed will buffer
+// into memory. Without a cap, a malicious or just misbehaving feed URL could
+// return an arbitrarily large (or infinite) body and exhaust memory —
+// especially now that agg fetches multiple feeds concurrently, each
+// buffering independently. Real RSS feeds are at most a few hundred KB; 10
+// MiB is generous headroom. It's a var, not a const, so tests can shrink it
+// instead of transferring megabytes of filler.
+var maxFeedBodySize int64 = 10 << 20 // 10 MiB
+
 // FetchFeed downloads and parses the RSS feed at feedURL, unescaping HTML
 // entities in the channel and item title/description fields.
 func FetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
@@ -44,9 +53,12 @@ func FetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
 		return nil, fmt.Errorf("unexpected status %d fetching %s", res.StatusCode, feedURL)
 	}
 
-	data, err := io.ReadAll(res.Body)
+	data, err := io.ReadAll(io.LimitReader(res.Body, maxFeedBodySize+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading response body from %s: %w", feedURL, err)
+	}
+	if int64(len(data)) > maxFeedBodySize {
+		return nil, fmt.Errorf("response from %s exceeds %d byte limit", feedURL, maxFeedBodySize)
 	}
 
 	var feed RSSFeed
