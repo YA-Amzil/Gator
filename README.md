@@ -77,7 +77,9 @@ The aggregator fetches RSS feeds using:
 
 - `http.NewRequestWithContext`
 - A custom `User-Agent: gator` header
-- `io.ReadAll` + `xml.Unmarshal`
+- `io.ReadAll` (capped at 10 MiB via `io.LimitReader`, since `addfeed <name>
+  <url>` accepts any URL and a feed response shouldn't be able to exhaust
+  memory) + `xml.Unmarshal`
 - `html.UnescapeString` on channel/item titles and descriptions
 
 Example feeds used for testing:

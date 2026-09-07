@@ -112,7 +112,11 @@ entirely in SQL (`LEAST(POWER(2, consecutive_failures), 60)` minutes). The
 `User-Agent: gator`, and HTML-unescapes exactly four fields after parsing —
 channel title/description and each item's title/description. Preserve that
 exact behavior (fields, header, unescape targets) if touching this file, since
-it mirrors a spec other tooling depends on.
+it mirrors a spec other tooling depends on. The response body is read via
+`io.LimitReader(res.Body, maxFeedBodySize+1)` (10 MiB, a package `var` so
+tests can shrink it) — a feed URL is arbitrary user input (`addfeed <name>
+<url>`), and without a cap a malicious or misbehaving server could exhaust
+memory, more so now that `agg` fetches feeds concurrently.
 
 **Read/unread tracking** (`post_reads` table): a post is "read" for a user
 if a `(user_id, post_id)` row exists in `post_reads` — absence means unread,
