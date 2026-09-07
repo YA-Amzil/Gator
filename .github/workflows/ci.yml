@@ -54,6 +54,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Vulnerability scan
+        run: govulncheck ./...
+
       - name: Install goose
         run: go install github.com/pressly/goose/v3/cmd/goose@latest
 
